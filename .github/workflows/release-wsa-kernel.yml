@@ -1,4 +1,4 @@
-name: Release
+name: Release WSA Kernel
 on:
   push:
     tags:
