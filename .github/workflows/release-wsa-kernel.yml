@@ -43,3 +43,5 @@ jobs:
           tag_name: ${{ steps.display.outputs.date }}
           files: |
             kernel-WSA*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
