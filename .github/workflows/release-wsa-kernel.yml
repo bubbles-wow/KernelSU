@@ -1,0 +1,45 @@
+name: Release
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  build-wsa-kernel-latte:
+    uses: ./.github/workflows/build-kernel-wsa-latte.yml
+    secrets: inherit
+  build-wsa-kernel-latte-2:
+    uses: ./.github/workflows/build-kernel-wsa-latte-2.yml
+    secrets: inherit
+  release:
+    needs:
+      - build-wsa-kernel-latte
+      - build-wsa-kernel-latte-2
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v3
+        
+      - name: Zip WSA kernel
+        run: |
+          for dir in kernel-WSA-*; do
+            if [ -d "$dir" ]; then
+              echo "------ Zip $dir ----------"
+              (cd $dir && zip -r9 "$dir".zip ./* -x .git .gitignore ./*.zip && mv *.zip ..)
+            fi
+          done
+
+      - name: Display structure of downloaded files
+        id: display
+        run: |
+          ls -R
+          date=$(date +%Y%m%d)
+          echo "date=$date" >>$GITHUB_OUTPUT
+
+      - name: release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ steps.display.outputs.date }}
+          files: |
+            kernel-WSA*.zip
