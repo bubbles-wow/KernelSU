@@ -2,18 +2,18 @@
 
 O KernelSU pode ser integrado em kernels não GKI e foi portado para 4.14 e versões anteriores.
 
-Devido à fragmentação de kernels não GKI, não temos uma maneira uniforme de construí-lo, portanto não podemos fornecer boot.img não GKI. Mas você mesmo pode construir o kernel com o KernelSU integrado.
+Devido à fragmentação de kernels não GKI, não temos uma maneira uniforme de construí-lo, portanto não podemos fornecer o boot.img não GKI. Mas você mesmo pode compilar o kernel com o KernelSU integrado.
 
-Primeiro, você deve ser capaz de construir um kernel inicializável a partir do código-fonte do kernel. Se o kernel não for de código aberto, será difícil executar o KernelSU no seu dispositivo.
+Primeiro, você deve ser capaz de compilar um kernel inicializável a partir do código-fonte do kernel. Se o kernel não for de código aberto, será difícil executar o KernelSU no seu dispositivo.
 
-Se você puder construir um kernel inicializável, existem duas maneiras de integrar o KernelSU ao código-fonte do kernel:
+Se você puder compilar um kernel inicializável, existem duas maneiras de integrar o KernelSU ao código-fonte do kernel:
 
 1. Automaticamente com `kprobe`
 2. Manualmente
 
 ## Integrar com kprobe
 
-O KernelSU usa kprobe para fazer ganchos de kernel, se o kprobe funcionar bem em seu kernel, é recomendado usar desta forma.
+O KernelSU usa kprobe para fazer ganchos do kernel, se o kprobe funcionar bem em seu kernel, é recomendado usar desta forma.
 
 Primeiro, adicione o KernelSU à árvore de origem do kernel:
 
@@ -40,6 +40,11 @@ Mas se você entrar em um bootloop quando o KernelSU for integrado, talvez o **k
 Comente `ksu_enable_sucompat()` e `ksu_enable_ksud()` em `KernelSU/kernel/ksu.c`, se o dispositivo inicializar normalmente, então o kprobe pode estar quebrado.
 :::
 
+:::info COMO FAZER COM QUE O RECURSO DE DESMONTAR MÓDULOS FUNCIONE NO PRÉ-GKI?
+
+Se o seu kernel for inferior a 5.9, você deve portar `path_umount` para `fs/namespace.c`. Isso é necessário para que o recurso de quantidade do módulo funcione. Se você não portar `path_umount`, o recurso "Desmontar módulos" não funcionará. Você pode obter mais informações sobre como conseguir isso no final desta página.
+:::
+
 ## Modifique manualmente a fonte do kernel
 
 Se o kprobe não funcionar no seu kernel (pode ser um bug do upstream ou do kernel abaixo de 4.8), então você pode tentar desta forma:
@@ -62,14 +67,14 @@ curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh
 
 :::
 
-Tenha em mente que em alguns dispositivos, seu defconfig pode estar em `arch/arm64/configs` ou em outros casos `arch/arm64/configs/vendor/your_defconfig`. Por exemplo, em seu defconfig, habilite `CONFIG_KSU` com y para habilitar ou n para desabilitar. Seu caminho será algo como:
+Tenha em mente que em alguns dispositivos, seu defconfig pode estar em `arch/arm64/configs` ou em outros casos `arch/arm64/configs/vendor/your_defconfig`. Por exemplo, em seu defconfig, habilite `CONFIG_KSU` com **y** para habilitar ou **n** para desabilitar. Seu caminho será algo como:
 `arch/arm64/configs/...` 
 ```
 # KernelSU
 CONFIG_KSU=y
 ```
 
-Em seguida, adicione chamadas KernelSU à fonte do kernel. Aqui estão alguns patches para referência:
+Em seguida, adicione chamadas do KernelSU à fonte do kernel. Aqui estão alguns patches para referência:
 
 ::: code-group
 
@@ -259,6 +264,8 @@ index 2ff887661237..e758d7db7663 100644
  		return -EINVAL;
 ```
 
+### Modo de Segurança
+
 Para ativar o Modo de Segurança integrado do KernelSU, você também deve modificar `input_handle_event` em `drivers/input/input.c`:
 
 :::tip DICA
@@ -292,8 +299,85 @@ index 45306f9ef247..815091ebfca4 100755
  		add_input_randomness(type, code, value);
 ```
 
-Finalmente, construa seu kernel novamente, e então, o KernelSU deve funcionar bem.
-
 :::info ENTRANDO NO MODO DE SEGURANÇA ACIDENTALMENTE?
 Se você estiver usando a integração manual e não desabilitar `CONFIG_KPROBES`, o usuário poderá acionar o Modo de Segurança pressionando o botão de diminuir volume após a inicialização! Portanto, se estiver usando a integração manual, você precisa desabilitar `CONFIG_KPROBES`!
 :::
+
+### Falha ao executar `pm` no terminal?
+
+Você deve modificar `fs/devpts/inode.c`. Referência:
+
+```diff
+diff --git a/fs/devpts/inode.c b/fs/devpts/inode.c
+index 32f6f1c68..d69d8eca2 100644
+--- a/fs/devpts/inode.c
++++ b/fs/devpts/inode.c
+@@ -602,6 +602,8 @@ struct dentry *devpts_pty_new(struct pts_fs_info *fsi, int index, void *priv)
+        return dentry;
+ }
+
++extern int ksu_handle_devpts(struct inode*);
++
+ /**
+  * devpts_get_priv -- get private data for a slave
+  * @pts_inode: inode of the slave
+@@ -610,6 +612,7 @@ struct dentry *devpts_pty_new(struct pts_fs_info *fsi, int index, void *priv)
+  */
+ void *devpts_get_priv(struct dentry *dentry)
+ {
++       ksu_handle_devpts(dentry->d_inode);
+        if (dentry->d_sb->s_magic != DEVPTS_SUPER_MAGIC)
+                return NULL;
+        return dentry->d_fsdata;
+```
+
+### Como portar path_umount
+
+Você pode fazer com que o recurso "Desmontar módulos" funcione em kernels pré-GKI portando manualmente `path_umount` da versão 5.9. Você pode usar este patch como referência:
+
+```diff
+--- a/fs/namespace.c
++++ b/fs/namespace.c
+@@ -1739,6 +1739,39 @@ static inline bool may_mandlock(void)
+ }
+ #endif
+
++static int can_umount(const struct path *path, int flags)
++{
++	struct mount *mnt = real_mount(path->mnt);
++
++	if (flags & ~(MNT_FORCE | MNT_DETACH | MNT_EXPIRE | UMOUNT_NOFOLLOW))
++		return -EINVAL;
++	if (!may_mount())
++		return -EPERM;
++	if (path->dentry != path->mnt->mnt_root)
++		return -EINVAL;
++	if (!check_mnt(mnt))
++		return -EINVAL;
++	if (mnt->mnt.mnt_flags & MNT_LOCKED) /* Check optimistically */
++		return -EINVAL;
++	if (flags & MNT_FORCE && !capable(CAP_SYS_ADMIN))
++		return -EPERM;
++	return 0;
++}
++
++int path_umount(struct path *path, int flags)
++{
++	struct mount *mnt = real_mount(path->mnt);
++	int ret;
++
++	ret = can_umount(path, flags);
++	if (!ret)
++		ret = do_umount(mnt, flags);
++
++	/* não devemos chamar path_put() pois isso limparia mnt_expiry_mark */
++	dput(path->dentry);
++	mntput_no_expire(mnt);
++	return ret;
++}
+ /*
+  * Agora o umount pode lidar com pontos de montagem e também com dispositivos bloqueados.
+  * Isto é importante para filesystems que usam dispositivos bloqueados sem nome.
+```
+
+Finalmente, construa seu kernel novamente, e então, o KernelSU deve funcionar bem.
